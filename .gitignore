@@ -1,0 +1,8 @@
+.cache/
+site/data/
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+qa/node_modules/
+qa/out/

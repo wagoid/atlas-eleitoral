@@ -1,0 +1,11 @@
+{
+  "name": "atlas-eleitoral-qa",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "qa": "node qa.mjs"
+  },
+  "devDependencies": {
+    "playwright-core": "1.48.2"
+  }
+}

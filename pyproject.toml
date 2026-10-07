@@ -1,0 +1,16 @@
+[project]
+name = "atlas-eleitoral"
+version = "0.1.0"
+description = "Pipeline determinístico do atlas eleitoral nacional 2026 (TSE + IBGE) para site estático"
+requires-python = ">=3.11"
+dependencies = []
+
+[dependency-groups]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[tool.ruff]
+line-length = 120
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
