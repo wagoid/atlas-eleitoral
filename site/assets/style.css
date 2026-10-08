@@ -15,3 +15,9 @@
 .field select:disabled,.field input:disabled{opacity:.5}
 @media(max-width:1050px){.territory{grid-template-columns:1fr 1fr}}
 @media(max-width:760px){.territory{grid-template-columns:1fr}}
+.tip{min-height:0;width:22px;height:22px;padding:0;margin-left:6px;border-radius:50%;font-size:.72rem;font-weight:700;line-height:20px;vertical-align:middle;color:var(--cyan);border-color:var(--cyan)}#tip-pop{position:fixed;z-index:3000;max-width:min(340px,calc(100vw - 16px));padding:10px 12px;background:#0e1a2c;color:var(--fg);border:1px solid var(--line);border-radius:8px;font-size:.8rem;line-height:1.45;box-shadow:0 8px 24px #0009;pointer-events:none}
+td .tip,th .tip{margin-left:4px}tr.pinned td{background:#122236;font-weight:650}
+.zone-label{color:#0b1423;font-weight:800;font-size:.72rem;text-shadow:0 0 3px #fff,0 0 3px #fff;white-space:nowrap;transform:translate(-50%,-50%)}
+table.corr th,table.corr td{text-align:center;padding:6px 8px;font-size:.78rem}table.corr thead th{white-space:normal;min-width:84px;vertical-align:bottom}table.corr tbody th{text-align:left;white-space:nowrap;position:sticky;left:0;background:#19283c;z-index:1}table.corr td:first-child{min-width:0}.corr-cell{border:0;background:none;min-height:32px;padding:2px 6px;width:100%;color:var(--fg)}.corr-diag{color:var(--muted)}.corr-empty{color:var(--muted)}
+.corr-panel{margin-top:16px}.scatter{width:100%;max-width:760px;height:auto;display:block;margin:8px 0 14px}.scatter line{stroke:#52637a}.scatter text{fill:var(--muted);font-size:12px}.scatter circle{fill:var(--cyan);fill-opacity:.55}
+table.zone-matrix td{min-width:0}table.zone-matrix td:first-child{min-width:200px}

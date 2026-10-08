@@ -13,6 +13,7 @@ ROUND = 1
 FEDERAL_ELECTION = "6257"
 STATE_ELECTION = "6259"
 UP_NUMBER = "80"
+PREVIOUS_YEAR = 2022
 
 UFS = [
     "AC",
@@ -97,6 +98,18 @@ def sources() -> list[Source]:
             f"{RESULTS}/ele{ELECTION_YEAR}/{FEDERAL_ELECTION}/dados/br/br-c0001-e00{FEDERAL_ELECTION}-u.json",
             "feed_br_c0001.json",
             "TSE · totalização nacional, Presidente",
+        ),
+        Source(
+            "partido_previous",
+            f"{ODSELE}/votacao_partido_munzona/votacao_partido_munzona_{PREVIOUS_YEAR}.zip",
+            "votacao_partido_munzona_previous.zip",
+            f"TSE · votação por partido, município e zona, {PREVIOUS_YEAR}",
+        ),
+        Source(
+            "detalhe_previous",
+            f"{ODSELE}/detalhe_votacao_munzona/detalhe_votacao_munzona_{PREVIOUS_YEAR}.zip",
+            "detalhe_votacao_munzona_previous.zip",
+            f"TSE · detalhe da apuração por município e zona, {PREVIOUS_YEAR}",
         ),
         Source(
             "geo_br",

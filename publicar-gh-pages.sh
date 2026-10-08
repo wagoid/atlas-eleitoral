@@ -13,6 +13,6 @@ cp -r site/. "$tmp"
 touch "$tmp/.nojekyll"
 git -C "$tmp" init -q -b gh-pages
 git -C "$tmp" add -A
-git -C "$tmp" commit -q -m "chore: publica atlas eleitoral"
+git -C "$tmp" -c user.name="$(git config user.name)" -c user.email="$(git config user.email)" commit -q -m "chore: publica atlas eleitoral"
 git -C "$tmp" push -f "$url" gh-pages
 echo "publicado em gh-pages de $url"

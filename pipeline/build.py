@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
-from pipeline import geo, tse
+from pipeline import geo, previous, tse
 from pipeline.sources import (
     DISTRICT_DEPUTY,
     ELECTION_YEAR,
@@ -14,6 +14,7 @@ from pipeline.sources import (
     FEDERAL_ELECTION,
     GOVERNOR,
     PRESIDENT,
+    PREVIOUS_YEAR,
     ROUND,
     SENATOR,
     STATE_DEPUTY,
@@ -70,6 +71,18 @@ MISSING_MESH = {
 PLACE_UNCHECKED, PLACE_OK, PLACE_OUTSIDE, PLACE_OK_UF_ONLY = range(4)
 MAJORITARIAN = (PRESIDENT, GOVERNOR, SENATOR)
 PRESIDENT_TRACKED = (UP_NUMBER, "13", "22")
+LEFT_PARTIES = {
+    "13": "PT",
+    "65": "PCdoB",
+    "43": "PV",
+    "50": "PSOL",
+    "18": "REDE",
+    "21": "PCB",
+    "16": "PSTU",
+    UP_NUMBER: "UP",
+}
+PL_NUMBER = "22"
+BLOC_OFFICES = (PRESIDENT, GOVERNOR, SENATOR)
 VALID, BLANK_SLOT, NULL_SLOT, ANNULLED, TECHNICAL = range(5)
 
 
@@ -120,24 +133,58 @@ class Section:
     detail: tuple[int, int, int]
 
 
+def bloc_group(party_number: str) -> str | None:
+    if party_number == UP_NUMBER:
+        return "up"
+    if party_number in LEFT_PARTIES:
+        return "left"
+    if party_number == PL_NUMBER:
+        return "pl"
+    return None
+
+
+def bloc_totals(votes: dict[str, int], groups: dict[str, str]) -> list[int]:
+    left = sum(v for n, v in votes.items() if groups.get(n) in ("up", "left"))
+    pl = sum(v for n, v in votes.items() if groups.get(n) == "pl")
+    return [left, pl]
+
+
+def occupancy_keys(office: int) -> list[str]:
+    if office == PRESIDENT:
+        return [f"1.{n}" for n in PRESIDENT_TRACKED] + ["1.left"]
+    if office in BLOC_OFFICES:
+        return [f"{office}.up", f"{office}.left", f"{office}.pl"]
+    return [f"{office}.up"]
+
+
+def occupancy_column(key: str) -> str:
+    return f"{key}#s"
+
+
 @dataclass
 class President:
     candidates: list[tse.Candidate]
     classifier: VoteClassifier
+    groups: dict[str, str]
     votes: dict[str, dict[tse.SectionKey, list[int]]] = field(default_factory=lambda: defaultdict(dict))
     sections: dict[str, dict[tse.SectionKey, Section]] = field(default_factory=lambda: defaultdict(dict))
 
     def columns(self) -> list[str]:
-        return office_columns(PRESIDENT, ["1.nullt", *(f"1.{c.number}" for c in self.candidates)])
+        return office_columns(PRESIDENT, ["1.nullt", "1.left", "1.pl", *(f"1.{c.number}" for c in self.candidates)])
 
     def values(self, uf: str, key: tse.SectionKey) -> list[int]:
         slots, by_candidate = self.votes[uf].get(key) or ([0] * 5, {})
-        return office_values(slots, [slots[TECHNICAL], *(by_candidate.get(c.number, 0) for c in self.candidates)])
+        tracked = [by_candidate.get(c.number, 0) for c in self.candidates]
+        return office_values(slots, [slots[TECHNICAL], *bloc_totals(by_candidate, self.groups), *tracked])
 
 
 def read_president(cache: Path, feed: tse.Feed) -> President:
-    tracked = sorted((c for c in feed.candidates if c.valid and c.number in PRESIDENT_TRACKED), key=lambda c: PRESIDENT_TRACKED.index(c.number))
-    president = President(tracked, VoteClassifier(feed))
+    tracked = sorted(
+        (c for c in feed.candidates if c.valid and c.number in PRESIDENT_TRACKED),
+        key=lambda c: PRESIDENT_TRACKED.index(c.number),
+    )
+    groups = {c.number: g for c in feed.candidates if c.valid and (g := bloc_group(c.party_number))}
+    president = President(tracked, VoteClassifier(feed), groups)
     for uf, key, _, number, votes in tse.iter_votes(cache / "votacao_secao_BR.zip"):
         entry = president.votes[uf].get(key)
         if entry is None:
@@ -168,22 +215,43 @@ def read_president(cache: Path, feed: tse.Feed) -> President:
 
 
 @dataclass
-class UpVotable:
+class Votable:
     office: int
     number: str
     name: str
+    party: str
     kind: str
+    group: str
 
 
-def up_votables(feeds: dict[int, tse.Feed]) -> list[UpVotable]:
+def tracked_votables(feeds: dict[int, tse.Feed]) -> list[Votable]:
+    """UP em todos os cargos; nos cargos com blocos, também as candidaturas dos partidos do campo da esquerda e do PL."""
     result = []
     for office, feed in feeds.items():
+        label = ui_office(office)
         if office not in MAJORITARIAN and feed.party_valid.get(UP_NUMBER):
-            result.append(UpVotable(ui_office(office), UP_NUMBER, "Legenda UP (80)", "legenda"))
+            result.append(Votable(label, UP_NUMBER, "Legenda UP (80)", "UP", "legenda", "up"))
         for cand in sorted(feed.candidates, key=lambda c: -c.votes):
-            if cand.party_number == UP_NUMBER and cand.valid:
-                result.append(UpVotable(ui_office(office), cand.number, cand.name, "candidatura"))
+            group = bloc_group(cand.party_number)
+            if not cand.valid or group is None or (group != "up" and label not in BLOC_OFFICES):
+                continue
+            result.append(Votable(label, cand.number, cand.name, cand.party, "candidatura", group))
     return result
+
+
+def state_office_extra(office: int, votables: list[Votable]) -> list[str]:
+    blocs = [f"{office}.left", f"{office}.pl"] if office in BLOC_OFFICES else []
+    return [f"{office}.up", *blocs, *(f"{office}.{v.number}" for v in votables if v.office == office)]
+
+
+def state_office_values(office: int, votables: list[Votable], section_votes: dict[tuple[int, str], int]) -> list[int]:
+    mine = [v for v in votables if v.office == office]
+    votes = [section_votes.get((office, v.number), 0) for v in mine]
+    up = sum(n for v, n in zip(mine, votes) if v.group == "up")
+    blocs = []
+    if office in BLOC_OFFICES:
+        blocs = bloc_totals({v.number: n for v, n in zip(mine, votes)}, {v.number: v.group for v in mine})
+    return [up, *blocs, *votes]
 
 
 @dataclass
@@ -193,7 +261,7 @@ class StateVotes:
     turnout: dict[tse.SectionKey, dict[int, int]]
 
 
-def read_state(cache: Path, uf: str, feeds: dict[int, tse.Feed], votables: list[UpVotable]) -> StateVotes:
+def read_state(cache: Path, uf: str, feeds: dict[int, tse.Feed], votables: list[Votable]) -> StateVotes:
     classifiers = {office: VoteClassifier(feed) for office, feed in feeds.items()}
     wanted = {(v.office, v.number) for v in votables}
     result = StateVotes(defaultdict(dict), defaultdict(dict), defaultdict(dict))
@@ -276,9 +344,17 @@ def build(cache: Path, out: Path) -> Checks:
 
     br_columns = ["aptos", "comp", "abst", *president.columns()]
     for office in STATE_OFFICES:
-        br_columns += office_columns(office, [f"{office}.up"])
+        blocs = [f"{office}.left", f"{office}.pl"] if office in BLOC_OFFICES else []
+        br_columns += office_columns(office, [f"{office}.up", *blocs])
+    occupancy = [occupancy_column(k) for o in OFFICE_NAMES for k in occupancy_keys(o)]
+    br_columns += occupancy
+    print(f"lendo {PREVIOUS_YEAR}", flush=True)
+    before = previous.read_previous(cache)
+    checks.previous_consistency(before)
+    previous_columns = before.columns()
+    br_columns += previous_columns
     br_rows = []
-    up_meta: dict[str, dict[str, list[dict]]] = {}
+    votables_meta: dict[str, dict[str, list[dict]]] = {}
     coverage: dict[str, int] = defaultdict(int)
     per_voter = {PRESIDENT: votes_per_voter(PRESIDENT, national_feed)}
 
@@ -290,20 +366,26 @@ def build(cache: Path, out: Path) -> Checks:
         uf_feeds.update(state_feeds)
         for office, feed in state_feeds.items():
             per_voter[ui_office(office)] = votes_per_voter(office, feed)
-        votables = up_votables(state_feeds)
+        votables = tracked_votables(state_feeds)
         state = read_state(cache, uf, state_feeds, votables) if offices else StateVotes({}, {}, {})
         places, secondary = read_places(cache, uf)
         areas = geo.load_areas(cache / f"geo_{uf}.json") if uf != EXTERIOR else {}
         labels = [ui_office(o) for o in offices]
-        up_meta[uf] = {
-            str(o): [{"n": v.number, "name": v.name, "kind": v.kind} for v in votables if v.office == o] for o in labels
+        votables_meta[uf] = {
+            str(o): [
+                {"n": v.number, "name": v.name, "party": v.party, "kind": v.kind, "group": v.group}
+                for v in votables
+                if v.office == o
+            ]
+            for o in labels
         }
 
         columns = ["aptos", "comp", "abst", *president.columns()]
         for office in labels:
-            columns += office_columns(
-                office, [f"{office}.up", *(f"{office}.{v.number}" for v in votables if v.office == office)]
-            )
+            columns += office_columns(office, state_office_extra(office, votables))
+        occupancy_keys_uf = [k for o in [PRESIDENT, *labels] for k in occupancy_keys(o)]
+        occupancy_index = [columns.index(k) for k in occupancy_keys_uf]
+        uf_columns = columns + [occupancy_column(k) for k in occupancy_keys_uf]
 
         by_mun: dict[str, list[tse.SectionKey]] = defaultdict(list)
         for key in president.sections[uf]:
@@ -311,7 +393,7 @@ def build(cache: Path, out: Path) -> Checks:
 
         mun_rows = []
         geo_properties = {}
-        uf_totals = [0] * len(columns)
+        uf_totals = [0] * len(uf_columns)
         for mun in sorted(by_mun, key=lambda m: president.sections[uf][by_mun[m][0]].municipality):
             _, ibge, _ = mapping.get(mun, (uf, "", ""))
             keys = sorted(by_mun[mun])
@@ -320,6 +402,7 @@ def build(cache: Path, out: Path) -> Checks:
             place_rows = []
             section_rows = []
             totals = [0] * len(columns)
+            occupied = [0] * len(occupancy_index)
             for key in keys:
                 section = president.sections[uf][key]
                 place_key = (key[1], section.local)
@@ -341,19 +424,19 @@ def build(cache: Path, out: Path) -> Checks:
                 checks.section_president(uf, key, section, values)
                 for office in labels:
                     slots = state.slots.get(key, {}).get(office, [0] * 5)
-                    section_up = state.up.get(key, {})
-                    candidate_votes = [section_up.get((office, v.number), 0) for v in votables if v.office == office]
-                    values += office_values(slots, [sum(candidate_votes), *candidate_votes])
+                    values += office_values(slots, state_office_values(office, votables, state.up.get(key, {})))
                     office_turnout = state.turnout.get(key, {}).get(office)
                     checks.section_state(
                         uf, key, office, section.turnout, office_turnout, sum(slots), per_voter[office]
                     )
                 section_rows.append([key[1], key[2], place_index[place_key], *values])
                 totals = [a + b for a, b in zip(totals, values)]
+                occupied = [n + (values[i] > 0) for n, i in zip(occupied, occupancy_index)]
             coverage["sections"] += len(keys)
             coverage["sections_not_installed"] += sum(1 for k in keys if not president.sections[uf][k].installed)
             coverage["places"] += len(place_rows)
             coverage["secondary"] += secondary.get(mun, 0)
+            zones_before = [(mun, z) for z in before.zones(mun)]
             write_json(
                 out / "mun" / f"{mun}.json",
                 {
@@ -363,19 +446,30 @@ def build(cache: Path, out: Path) -> Checks:
                     "uf": uf,
                     "cols": columns,
                     "secondary": secondary.get(mun, 0),
+                    "previous": {
+                        "cols": previous_columns,
+                        "total": before.values(zones_before),
+                        "zones": {str(z): before.values([(mun, z)]) for _, z in zones_before},
+                    },
                     "places": place_rows,
                     "sections": section_rows,
                 },
             )
             mapped = sum(1 for p in place_rows if p[7] in (PLACE_OK, PLACE_OK_UF_ONLY))
-            mun_rows.append([mun, ibge, name, len(place_rows), len(keys), mapped, *totals])
-            uf_totals = [a + b for a, b in zip(uf_totals, totals)]
+            mun_rows.append(
+                [mun, ibge, name, len(place_rows), len(keys), mapped, *totals, *occupied, *before.values(zones_before)]
+            )
+            uf_totals = [a + b for a, b in zip(uf_totals, totals + occupied)]
             if ibge:
                 geo_properties[ibge] = {"tse": mun, "name": name}
 
-        uf_map = dict(zip(columns, uf_totals))
+        uf_map = dict(zip(uf_columns, uf_totals))
+        uf_before = [k for k in before.valid if before.uf_of.get(k[0]) == uf]
+        uf_map.update(zip(previous_columns, before.values(uf_before)))
+        checks.previous_zones({mun: {k[1] for k in keys} for mun, keys in by_mun.items()}, before)
         checks.uf_feeds(uf, uf_feeds, uf_map, votables, len(president.sections[uf]))
-        write_json(out / "uf" / f"{uf}.json", {"uf": uf, "cols": columns, "rows": mun_rows, "up": up_meta[uf]})
+        checks.uf_blocs(uf, uf_feeds, uf_map, LEFT_PARTIES, PL_NUMBER, BLOC_OFFICES)
+        write_json(out / "uf" / f"{uf}.json", {"uf": uf, "cols": uf_columns + previous_columns, "rows": mun_rows})
         if areas:
             write_json(out / "geo" / f"{uf}.json", geo.compact_collection(cache / f"geo_{uf}.json", geo_properties))
             checks.geo_coverage(uf, geo_properties, areas, MISSING_MESH)
@@ -392,6 +486,8 @@ def build(cache: Path, out: Path) -> Checks:
 
     br_totals = {c: sum(r[5 + i] or 0 for r in br_rows) for i, c in enumerate(br_columns)}
     checks.national(national_feed, br_totals, sum(len(s) for s in president.sections.values()))
+    checks.national_blocs(national_feed, br_totals, LEFT_PARTIES, PL_NUMBER)
+    checks.previous_national(br_totals)
     uf_codes = {ibge[:2]: {"uf": uf, "name": UF_NAMES[uf]} for uf, ibge, _ in mapping.values() if ibge}
     write_json(out / "geo" / "br.json", geo.compact_collection(cache / "geo_br.json", uf_codes, digits=3))
     write_json(out / "br.json", {"cols": br_columns, "rows": br_rows})
@@ -410,13 +506,23 @@ def build(cache: Path, out: Path) -> Checks:
             {
                 "code": code,
                 "name": name,
-                "scope": "all" if code == PRESIDENT else "up",
+                "scope": "blocs" if code in BLOC_OFFICES else "up",
                 "votes_per_voter": per_voter.get(code, 1),
             }
             for code, name in OFFICE_NAMES.items()
         ],
         "president": [{"n": c.number, "name": c.name, "party": c.party} for c in president.candidates],
-        "up": up_meta,
+        "votables": votables_meta,
+        "blocs": {
+            "left": [{"n": n, "party": sg} for n, sg in LEFT_PARTIES.items()],
+            "pl": {"n": PL_NUMBER, "party": "PL"},
+            "offices": list(BLOC_OFFICES),
+        },
+        "occupancy": {str(o): occupancy_keys(o) for o in OFFICE_NAMES},
+        "previous": {
+            "year": PREVIOUS_YEAR,
+            "candidacy": {uf: sorted(offices) for uf, offices in sorted(before.candidacy.items())},
+        },
         "ufs": [{"uf": uf, "name": UF_NAMES[uf]} for uf in [*UFS, EXTERIOR]],
         "coverage": dict(coverage),
         "missing_mesh": list(MISSING_MESH.values()),

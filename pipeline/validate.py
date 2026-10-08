@@ -3,6 +3,7 @@ from collections import defaultdict
 from pipeline.sources import PRESIDENT
 
 EXAMPLES_PER_RULE = 5
+PREVIOUS_PRESIDENT_UP = 53519
 
 
 class Checks:
@@ -80,6 +81,17 @@ class Checks:
                     expected = next(c.votes for c in feed.candidates if c.number == votable.number)
                 self.compare(uf, f"{label}.{votable.number}", expected, totals[f"{label}.{votable.number}"], source)
 
+    def uf_blocs(self, uf: str, feeds: dict, totals: dict[str, int], left: dict, pl: str, offices) -> None:
+        for office, feed in feeds.items():
+            if office not in offices:
+                continue
+            source = f"feed {uf} cargo {office} ({feed.generated})"
+            valid = [c for c in feed.candidates if c.valid]
+            expected_left = sum(c.votes for c in valid if c.party_number in left)
+            expected_pl = sum(c.votes for c in valid if c.party_number == pl)
+            self.compare(uf, f"{office}.left", expected_left, totals[f"{office}.left"], source)
+            self.compare(uf, f"{office}.pl", expected_pl, totals[f"{office}.pl"], source)
+
     def geo_coverage(self, uf: str, with_data: dict[str, dict], areas: dict, known_missing: dict[str, str]) -> None:
         self.compare(
             uf, "municípios na malha IBGE sem resultado", 0, len(set(areas) - set(with_data)), "malha IBGE x TSE"
@@ -105,6 +117,32 @@ class Checks:
         for cand in feed.candidates:
             if cand.valid and f"1.{cand.number}" in totals:
                 self.compare("BR", f"1.{cand.number}", cand.votes, totals[f"1.{cand.number}"], source)
+
+    def national_blocs(self, feed, totals: dict[str, int], left: dict, pl: str) -> None:
+        source = f"feed BR cargo 1 ({feed.generated})"
+        valid = [c for c in feed.candidates if c.valid]
+        self.compare("BR", "1.left", sum(c.votes for c in valid if c.party_number in left), totals["1.left"], source)
+        self.compare("BR", "1.pl", sum(c.votes for c in valid if c.party_number == pl), totals["1.pl"], source)
+
+    def previous_consistency(self, before) -> None:
+        for key, offices in before.party_valid.items():
+            for office, votes in offices.items():
+                if before.valid.get(key, {}).get(office) != votes:
+                    self.violation("2022: soma dos partidos = válidos do detalhe da apuração", [*key, office])
+
+    def previous_zones(self, zones_now: dict[str, set[int]], before) -> None:
+        for mun, zones in zones_now.items():
+            earlier = set(before.zones(mun))
+            if not earlier:
+                self.info["municípios sem dado de 2022"] += 1
+            elif zones != earlier:
+                self.info["municípios com zonas alteradas desde 2022"] += 1
+                self.info["zonas de 2026 sem correspondência em 2022"] += len(zones - earlier)
+
+    def previous_national(self, totals: dict[str, int]) -> None:
+        self.compare(
+            "BR", "1.up22", PREVIOUS_PRESIDENT_UP, totals["1.up22"], "resultado oficial do 1º turno de 2022 (TSE)"
+        )
 
     def failures(self) -> list[dict]:
         return [r for r in self.records if not r["ok"]]
